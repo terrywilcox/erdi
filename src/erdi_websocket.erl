@@ -14,7 +14,6 @@
 -export([not_connected/3]).
 -export([wait_hello/3]).
 -export([identify/3]).
--export([wait_identify/3]).
 -export([ready/3]).
 
 start_link() ->
@@ -64,22 +63,32 @@ not_connected(info, {gun_response, _Pid, _, _, _Status, _Headers}, Data) ->
 
 wait_hello(enter, _OldStateName, Data) ->
     {keep_state, Data};
-wait_hello(info, Stuff, Data) ->
-    io:format(user, "wait hello stuff! Stuff = ~p~n", [Stuff]),
+wait_hello(info, {gun_ws, _Pid, _Ref, {text, Content}}, Data) ->
+    #{<<"op">> := OpCode, <<"d">> := Dee} = json:decode(Content),
+    #{<<"heartbeat_interval">> := HeartbeatInterval} = Dee,
+    io:format(user, "wait hello op_code ~p~n", [OpCode]),
+    io:format(user, "wait hello heartbeat_interval ~p~n", [HeartbeatInterval]),
+    {next_state, identify, Data#{heartbeat_interval => HeartbeatInterval}}.
+
+identify(enter, _OldStateName, #{} = #{conn := Pid, ref := Ref} = Data) ->
+    % send identify events, but no more than 1000 in a 24 hour period
+    IdentifyMsg = #{op => 2,
+                    d => #{<<"token">> => secret_token(),
+                           <<"intents">> => 513,
+                           <<"properties">> => #{<<"os">> => <<"Linux">>,
+                                             <<"browser">> => <<"erdi_library">>,
+                                             <<"device">> => <<"erdi_library">>
+                                            }
+                     }
+                   },
+    IdentifyJson = iolist_to_binary(json:encode(IdentifyMsg)),
+    io:format(user, "Identify JSON: ~p~n", [IdentifyJson]),
+     gun:ws_send(Pid, Ref, {text, IdentifyJson}),
+    io:format(user, "********** sent Identify JSON: ~n", []),
+    {keep_state, Data};
+identify(info, {gun_ws, _, _, Frame}, Data) ->
+    io:format(user, "response from identify: ~p~n", [Frame]),
     {keep_state, Data}.
-
-identify(_, _, _) ->
-    % send identify events
-
-    % GOTO wait_identify
-    ok.
-
-wait_identify(_, _, _) ->
-    % receive identify ack
-    % Startup heartbeat ... process
-
-    % GOTO ready
-    ok.
 
 ready(_, _, _) ->
     ok.
@@ -89,3 +98,8 @@ code_change(_, _, _, _) ->
 
 terminate(_, _, _) ->
     ok.
+
+secret_token() ->
+    list_to_binary(os:getenv("DISCORD_SECRET_TOKEN")).
+
+    
