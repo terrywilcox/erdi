@@ -1,0 +1,11 @@
+┏━━━━━━━━━━━━━━━━┓
+┃   2025-01-30   ┃
+┗━━━━━━━━━━━━━━━━┛
+
+HTTP REST GET for WSS URL:
+
+ https://discord.com/api/gateway
+
+ returns:
+
+ {"url":"wss://gateway.discord.gg"}

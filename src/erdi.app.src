@@ -5,7 +5,9 @@
     {mod, {erdi_app, []}},
     {applications, [
         kernel,
-        stdlib
+        stdlib,
+        gun,
+        ssl
     ]},
     {env, []},
     {modules, []},
