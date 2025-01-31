@@ -31,7 +31,9 @@ init([]) ->
         intensity => 0,
         period => 1
     },
-    ChildSpecs = [#{id => erdi_websocket, start => {erdi_websocket, start_link, []}, type => worker}],
+    ChildSpecs = [
+        #{id => erdi_websocket, start => {erdi_websocket, start_link, []}, type => worker}
+    ],
     {ok, {SupFlags, ChildSpecs}}.
 
 %% internal functions
