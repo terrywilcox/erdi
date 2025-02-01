@@ -4,12 +4,10 @@
 
 -export([start_link/0]).
 -export([connect/0]).
-
 -export([init/1]).
 -export([callback_mode/0]).
 -export([terminate/3]).
 -export([code_change/4]).
-
 -export([get_url/3]).
 -export([not_connected/3]).
 -export([wait_hello/3]).
@@ -17,7 +15,6 @@
 -export([ready/3]).
 
 start_link() ->
-    io:format("erdi_websocket start_link~n"),
     gen_statem:start_link({local, ?MODULE}, ?MODULE, [], []).
 
 connect() ->
@@ -27,9 +24,14 @@ callback_mode() ->
     [state_functions, state_enter].
 
 init([]) ->
-    Data = maps:from_list(application:get_all_env(erdi)),
-    Data1 = Data#{gateway_tls => [{verify, verify_peer}, {cacerts, public_key:cacerts_get()}]},
-    Data2 = Data1#{websocket_tls => [{verify, verify_none}, {cacerts, public_key:cacerts_get()}]},
+    Data =
+        maps:from_list(
+            application:get_all_env(erdi)
+        ),
+    Data1 =
+        Data#{gateway_tls => [{verify, verify_peer}, {cacerts, public_key:cacerts_get()}]},
+    Data2 =
+        Data1#{websocket_tls => [{verify, verify_none}, {cacerts, public_key:cacerts_get()}]},
     {ok, get_url, Data2}.
 
 get_url(
@@ -40,7 +42,8 @@ get_url(
         gateway_domain := Domain,
         port := Port,
         gateway_path := Path
-    } = Data
+    } =
+        Data
 ) ->
     {ok, Conn} = gun:open(Domain, Port, #{tls_opts => TLSOpts}),
     {ok, _Protocol} = gun:await_up(Conn),
@@ -64,7 +67,8 @@ not_connected(
         websocket_tls := TLSOpts,
         websocket_protocols := Protocols,
         websocket_path := Path
-    } = Data
+    } =
+        Data
 ) ->
     {ok, Conn} = gun:open(Url, Port, #{tls_opts => TLSOpts, protocols => Protocols}),
     {ok, _Protocol} = gun:await_up(Conn),
@@ -77,38 +81,84 @@ not_connected(info, {gun_response, _Pid, _, _, _Status, _Headers}, Data) ->
 
 wait_hello(enter, _OldStateName, Data) ->
     {keep_state, Data};
-wait_hello(info, {gun_ws, _Pid, _Ref, {text, Content}}, Data) ->
+wait_hello(info, {gun_ws, Pid, Ref, {text, Content}}, Data) ->
     #{<<"op">> := OpCode, <<"d">> := Dee} = json:decode(Content),
-    #{<<"heartbeat_interval">> := HeartbeatInterval} = Dee,
-    io:format(user, "wait hello op_code ~p~n", [OpCode]),
-    io:format(user, "wait hello heartbeat_interval ~p~n", [HeartbeatInterval]),
-    {next_state, identify, Data#{heartbeat_interval => HeartbeatInterval}}.
+
+    case OpCode of
+        10 ->
+            #{<<"heartbeat_interval">> := HeartbeatInterval} = Dee,
+            erdi_heartbeat:start_beating(#{
+                heartbeat_interval => HeartbeatInterval,
+                conn => Pid,
+                ref => Ref,
+                seq => <<"null">>
+            }),
+            {next_state, identify, Data#{heartbeat_interval => HeartbeatInterval}};
+        _ ->
+            io:format(user, "what is this? ~p~n", [OpCode]),
+            {keep_state, Data}
+    end.
 
 identify(enter, _OldStateName, #{} = #{conn := Pid, ref := Ref} = Data) ->
     % send identify events, but no more than 1000 in a 24 hour period
-    IdentifyMsg = #{
-        op => 2,
-        d => #{
-            <<"token">> => secret_token(),
-            <<"intents">> => 513,
-            <<"properties">> => #{
-                <<"os">> => <<"Linux">>,
-                <<"browser">> => <<"erdi_library">>,
-                <<"device">> => <<"erdi_library">>
-            }
-        }
-    },
+    IdentifyMsg =
+        #{
+            op => 2,
+            d =>
+                #{
+                    <<"token">> => secret_token(),
+                    <<"intents">> => 513,
+                    <<"properties">> =>
+                        #{
+                            <<"os">> => <<"Linux">>,
+                            <<"browser">> => <<"erdi_library">>,
+                            <<"device">> => <<"erdi_library">>
+                        }
+                }
+        },
     IdentifyJson = iolist_to_binary(json:encode(IdentifyMsg)),
-    io:format(user, "Identify JSON: ~p~n", [IdentifyJson]),
     gun:ws_send(Pid, Ref, {text, IdentifyJson}),
-    io:format(user, "********** sent Identify JSON: ~n", []),
     {keep_state, Data};
-identify(info, {gun_ws, _, _, Frame}, Data) ->
-    io:format(user, "response from identify: ~p~n", [Frame]),
-    {keep_state, Data}.
+identify(info, {gun_ws, _, _, {_, Response}}, Data) ->
+    ResponseTerm = json:decode(Response),
+    OpCode = maps:get(<<"op">>, ResponseTerm),
+    Return =
+        case OpCode of
+            11 ->
+                io:format(user, "heartbeat ACK ~p~n", [ResponseTerm]),
+                {keep_state, Data};
+            %% When we get the 0, we should postpone it and enter ready state
+            0 ->
+                Seq = maps:get(<<"s">>, ResponseTerm),
+                erdi_heartbeat:set_sequence(Seq),
+                io:format(user, "Message Sequence ~p~n", [Seq]),
+                {keep_state, Data#{seq => Seq}};
+            _ ->
+                io:format(user, "No idea ~p~n", [ResponseTerm]),
+                {keep_state, Data}
+        end,
+    Return.
 
-ready(_, _, _) ->
-    ok.
+ready(enter, _OldStateName, Data) ->
+    {keep_state, Data};
+ready(info, {gun_ws, _, _, {_, Response}}, Data) ->
+    ResponseTerm = json:decode(Response),
+    OpCode = maps:get(<<"op">>, ResponseTerm),
+    Return =
+        case OpCode of
+            11 ->
+                io:format(user, "heartbeat ACK ~p~n", [ResponseTerm]),
+                {keep_state, Data};
+            0 ->
+                Seq = maps:get(<<"s">>, ResponseTerm),
+                erdi_heartbeat:set_sequence(Seq),
+                io:format(user, "Message Sequence ~p~n", [Seq]),
+                {keep_state, ready, Data#{seq => Seq}};
+            _ ->
+                io:format(user, "No idea ~p~n", [ResponseTerm]),
+                {keep_state, Data}
+        end,
+    Return.
 
 code_change(_, _, _, _) ->
     ok.

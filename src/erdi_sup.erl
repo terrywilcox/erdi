@@ -32,7 +32,8 @@ init([]) ->
         period => 1
     },
     ChildSpecs = [
-        #{id => erdi_websocket, start => {erdi_websocket, start_link, []}, type => worker}
+        #{id => erdi_websocket, start => {erdi_websocket, start_link, []}, type => worker},
+        #{id => erdi_heartbeat, start => {erdi_heartbeat, start_link, []}, type => worker}
     ],
     {ok, {SupFlags, ChildSpecs}}.
 
