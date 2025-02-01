@@ -8,8 +8,8 @@
 -export([callback_mode/0]).
 -export([terminate/3]).
 -export([code_change/4]).
--export([get_url/3]).
--export([not_connected/3]).
+-export([get_ws_url/3]).
+-export([connecting_ws/3]).
 -export([wait_hello/3]).
 -export([identify/3]).
 -export([ready/3]).
@@ -30,11 +30,10 @@ init([]) ->
         ),
     Data1 =
         Data#{gateway_tls => [{verify, verify_peer}, {cacerts, public_key:cacerts_get()}]},
-    Data2 =
-        Data1#{websocket_tls => [{verify, verify_none}, {cacerts, public_key:cacerts_get()}]},
-    {ok, get_url, Data2}.
+    Data2 = Data1#{ws_tls => [{verify, verify_none}, {cacerts, public_key:cacerts_get()}]},
+    {ok, get_ws_url, Data2}.
 
-get_url(
+get_ws_url(
     enter,
     _OldStateName,
     #{
@@ -49,24 +48,24 @@ get_url(
     {ok, _Protocol} = gun:await_up(Conn),
     _StreamRef = gun:get(Conn, Path),
     {keep_state, Data};
-get_url(info, {gun_response, _Pid, _Ref, nofin, _Code, _Headers}, Data) ->
+get_ws_url(info, {gun_response, _Pid, _Ref, nofin, _Code, _Headers}, Data) ->
     {keep_state, Data};
-get_url(info, {gun_data, _Pid, _Ref, nofin, HttpData}, Data) ->
+get_ws_url(info, {gun_data, _Pid, _Ref, nofin, HttpData}, Data) ->
     #{<<"url">> := <<"wss://", Url/binary>>} = json:decode(HttpData),
-    {keep_state, Data#{url => binary_to_list(Url)}};
-get_url(info, {gun_data, Pid, _Ref, fin, _HttpData}, Data) ->
+    {keep_state, Data#{ws_url => binary_to_list(Url)}};
+get_ws_url(info, {gun_data, Pid, _Ref, fin, _HttpData}, Data) ->
     gun:close(Pid),
-    {next_state, not_connected, Data}.
+    {next_state, connecting_ws, Data}.
 
-not_connected(
+connecting_ws(
     enter,
     _OldStateName,
     #{
-        url := Url,
+        ws_url := Url,
         port := Port,
-        websocket_tls := TLSOpts,
-        websocket_protocols := Protocols,
-        websocket_path := Path
+        ws_tls := TLSOpts,
+        ws_protocols := Protocols,
+        ws_path := Path
     } =
         Data
 ) ->
@@ -74,19 +73,19 @@ not_connected(
     {ok, _Protocol} = gun:await_up(Conn),
     gun:ws_upgrade(Conn, Path),
     {keep_state, Data};
-not_connected(info, {gun_upgrade, Pid, Ref, [<<"websocket">>], _Headers}, Data) ->
+connecting_ws(info, {gun_upgrade, Pid, Ref, [<<"websocket">>], _Headers}, Data) ->
     {next_state, wait_hello, Data#{conn => Pid, ref => Ref}};
-not_connected(info, {gun_response, _Pid, _, _, _Status, _Headers}, Data) ->
+connecting_ws(info, {gun_response, _Pid, _, _, _Status, _Headers}, Data) ->
     {keep_state, Data}.
 
 wait_hello(enter, _OldStateName, Data) ->
     {keep_state, Data};
 wait_hello(info, {gun_ws, Pid, Ref, {text, Content}}, Data) ->
-    #{<<"op">> := OpCode, <<"d">> := Dee} = json:decode(Content),
+    #{<<"op">> := OpCode, <<"d">> := DiscordData} = json:decode(Content),
 
     case OpCode of
         10 ->
-            #{<<"heartbeat_interval">> := HeartbeatInterval} = Dee,
+            #{<<"heartbeat_interval">> := HeartbeatInterval} = DiscordData,
             erdi_heartbeat:start_beating(#{
                 heartbeat_interval => HeartbeatInterval,
                 conn => Pid,
@@ -99,7 +98,17 @@ wait_hello(info, {gun_ws, Pid, Ref, {text, Content}}, Data) ->
             {keep_state, Data}
     end.
 
-identify(enter, _OldStateName, #{} = #{conn := Pid, ref := Ref} = Data) ->
+identify(
+    enter,
+    _OldStateName,
+    #{} =
+        #{
+            conn := Pid,
+            ref := Ref,
+            intents := Intents
+        } =
+        Data
+) ->
     % send identify events, but no more than 1000 in a 24 hour period
     IdentifyMsg =
         #{
@@ -107,7 +116,7 @@ identify(enter, _OldStateName, #{} = #{conn := Pid, ref := Ref} = Data) ->
             d =>
                 #{
                     <<"token">> => secret_token(),
-                    <<"intents">> => 513,
+                    <<"intents">> => Intents,
                     <<"properties">> =>
                         #{
                             <<"os">> => <<"Linux">>,
@@ -127,12 +136,8 @@ identify(info, {gun_ws, _, _, {_, Response}}, Data) ->
             11 ->
                 io:format(user, "heartbeat ACK ~p~n", [ResponseTerm]),
                 {keep_state, Data};
-            %% When we get the 0, we should postpone it and enter ready state
             0 ->
-                Seq = maps:get(<<"s">>, ResponseTerm),
-                erdi_heartbeat:set_sequence(Seq),
-                io:format(user, "Message Sequence ~p~n", [Seq]),
-                {keep_state, Data#{seq => Seq}};
+                {next_state, ready, Data, [postpone]};
             _ ->
                 io:format(user, "No idea ~p~n", [ResponseTerm]),
                 {keep_state, Data}
@@ -140,6 +145,7 @@ identify(info, {gun_ws, _, _, {_, Response}}, Data) ->
     Return.
 
 ready(enter, _OldStateName, Data) ->
+    io:format(user, "entered ready~n", []),
     {keep_state, Data};
 ready(info, {gun_ws, _, _, {_, Response}}, Data) ->
     ResponseTerm = json:decode(Response),
@@ -152,8 +158,9 @@ ready(info, {gun_ws, _, _, {_, Response}}, Data) ->
             0 ->
                 Seq = maps:get(<<"s">>, ResponseTerm),
                 erdi_heartbeat:set_sequence(Seq),
-                io:format(user, "Message Sequence ~p~n", [Seq]),
-                {keep_state, ready, Data#{seq => Seq}};
+                io:format(user, "Message Sequence ~p: ~p~n", [Seq, ResponseTerm]),
+                Data2 = handle_message(ResponseTerm, Data),
+                {keep_state, Data2#{seq => Seq}};
             _ ->
                 io:format(user, "No idea ~p~n", [ResponseTerm]),
                 {keep_state, Data}
@@ -168,3 +175,16 @@ terminate(_, _, _) ->
 
 secret_token() ->
     list_to_binary(os:getenv("DISCORD_SECRET_TOKEN")).
+
+handle_message(#{<<"t">> := <<"READY">>, <<"d">> := DiscordData} = _Message, Data) ->
+    #{
+        <<"resume_gateway_url">> := ResumeUrl,
+        <<"session_id">> := SessionId,
+        <<"guilds">> := Guilds
+    } =
+        DiscordData,
+    io:format(user, " ready message: ~p, ~p, ~p~n", [ResumeUrl, SessionId, Guilds]),
+    Data#{resume_url => ResumeUrl, session_id => SessionId, guilds => Guilds};
+handle_message(#{<<"t">> := Type} = _Message, Data) ->
+    io:format(user, " message type: ~p~n", [Type]),
+    Data.
