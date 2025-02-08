@@ -24,12 +24,13 @@ callback_mode() ->
     [state_functions, state_enter].
 
 init([]) ->
-    Data =
-        maps:from_list(
-            application:get_all_env(erdi)
-        ),
-    Data1 =
-        Data#{gateway_tls => [{verify, verify_peer}, {cacerts, public_key:cacerts_get()}]},
+    Data = maps:from_list(
+        application:get_all_env(erdi)
+    ),
+    Data1 = Data#{
+        gateway_tls =>
+            [{verify, verify_peer}, {cacerts, public_key:cacerts_get()}]
+    },
     Data2 = Data1#{ws_tls => [{verify, verify_none}, {cacerts, public_key:cacerts_get()}]},
     {ok, get_ws_url, Data2}.
 
@@ -44,18 +45,29 @@ get_ws_url(
     } =
         Data
 ) ->
-    {ok, Conn} = gun:open(Domain, Port, #{tls_opts => TLSOpts}),
-    {ok, _Protocol} = gun:await_up(Conn),
-    _StreamRef = gun:get(Conn, Path),
+    open_http(Domain, Port, Path, TLSOpts),
     {keep_state, Data};
 get_ws_url(info, {gun_response, _Pid, _Ref, nofin, _Code, _Headers}, Data) ->
     {keep_state, Data};
 get_ws_url(info, {gun_data, _Pid, _Ref, nofin, HttpData}, Data) ->
-    #{<<"url">> := <<"wss://", Url/binary>>} = json:decode(HttpData),
-    {keep_state, Data#{ws_url => binary_to_list(Url)}};
-get_ws_url(info, {gun_data, Pid, _Ref, fin, _HttpData}, Data) ->
+    Data2 =
+        case decode_ws_url(HttpData) of
+            undefined ->
+                Data;
+            Url ->
+                Data#{ws_url => binary_to_list(Url)}
+        end,
+    {keep_state, Data2};
+get_ws_url(info, {gun_data, Pid, _Ref, fin, HttpData}, Data) ->
+    Data2 =
+        case decode_ws_url(HttpData) of
+            undefined ->
+                Data;
+            Url ->
+                Data#{ws_url => binary_to_list(Url)}
+        end,
     gun:close(Pid),
-    {next_state, connecting_ws, Data}.
+    {next_state, connecting_ws, Data2}.
 
 connecting_ws(
     enter,
@@ -184,7 +196,36 @@ handle_message(#{<<"t">> := <<"READY">>, <<"d">> := DiscordData} = _Message, Dat
     } =
         DiscordData,
     io:format(user, " ready message: ~p, ~p, ~p~n", [ResumeUrl, SessionId, Guilds]),
-    Data#{resume_url => ResumeUrl, session_id => SessionId, guilds => Guilds};
+    Data#{
+        resume_url => ResumeUrl,
+        session_id => SessionId,
+        guilds => Guilds
+    };
 handle_message(#{<<"t">> := Type} = _Message, Data) ->
     io:format(user, " message type: ~p~n", [Type]),
     Data.
+
+open_http(Domain, 443 = Port, Path, TLSOpts) ->
+    {ok, Conn} = gun:open(Domain, Port, #{tls_opts => TLSOpts}),
+    {ok, _Protocol} = gun:await_up(Conn),
+    StreamRef = gun:get(Conn, Path),
+    {Conn, StreamRef};
+open_http(Domain, Port, Path, _TLSOpts) ->
+    {ok, Conn} = gun:open(Domain, Port),
+    {ok, _Protocol} = gun:await_up(Conn),
+    StreamRef = gun:get(Conn, Path),
+    {Conn, StreamRef}.
+
+decode_ws_url(<<>>) ->
+    undefined;
+decode_ws_url(HttpData) when is_binary(HttpData) ->
+    Json = json:decode(HttpData),
+    case maps:get(<<"url">>, Json) of
+        <<"wss://", Url/binary>> ->
+            Url;
+        undefined ->
+            undefined
+    end;
+decode_ws_url(HttpData) ->
+    io:format(user, "what? ~p~n", [HttpData]),
+    undefined.
