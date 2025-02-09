@@ -56,14 +56,11 @@ handle_info(beat_heart, #{seq := Sequence, unacked_beats := Unacked} = State)
 handle_info(beat_heart,
             #{heartbeat_interval := HeartbeatInterval,
               seq := Sequence,
-              conn := Conn,
-              ref := Ref,
               unacked_beats := Unacked} =
               State) ->
   Heartbeat = #{?OPCODE => ?OP_HEARTBEAT, ?DATA => Sequence},
   io:format(user, "sending heartbeat: ~p, unacked: ~p~n", [Heartbeat, Unacked]),
-  Message = iolist_to_binary(json:encode(Heartbeat)),
-  gun:ws_send(Conn, Ref, {text, Message}),
+  erdi_websocket:send(Heartbeat),
   erlang:send_after(HeartbeatInterval, self(), beat_heart),
   {noreply, State#{unacked_beats => Unacked + 1}}.
 

@@ -6,6 +6,7 @@
 
 -export([start_link/0]).
 -export([reconnect/0]).
+-export([send/1]).
 -export([init/1]).
 -export([callback_mode/0]).
 -export([terminate/3]).
@@ -22,6 +23,9 @@ start_link() ->
 
 reconnect() ->
   gen_statem:cast(?MODULE, reconnect).
+
+send(Message) ->
+  gen_statem:cast(?MODULE, {send, Message}).
 
 callback_mode() ->
   [state_functions, state_enter].
@@ -164,6 +168,9 @@ ready(enter, _OldStateName, Data) ->
   {keep_state, Data};
 ready(cast, reconnect, Data) ->
   {next_state, resuming, Data};
+ready(cast, {send, Message}, #{conn := Conn, ref := Ref} = Data) ->
+  send_message(Conn, Ref, Message),
+  {keep_state, Data};
 ready(info, {gun_down, Pid, _, _, _, _}, Data) ->
   gun:close(Pid),
   {next_state, resuming, Data};
@@ -264,3 +271,7 @@ send_resume(Pid, Ref, SessionId, Sequence) ->
           <<"seq">> => Sequence}},
   ResumeJson = iolist_to_binary(json:encode(ResumeMsg)),
   gun:ws_send(Pid, Ref, {text, ResumeJson}).
+
+send_message(Pid, Ref, Message) ->
+  Json = iolist_to_binary(json:encode(Message)),
+  gun:ws_send(Pid, Ref, {text, Json}).
