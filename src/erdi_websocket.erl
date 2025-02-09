@@ -5,7 +5,7 @@
 -include("erdi.hrl").
 
 -export([start_link/0]).
--export([connect/0]).
+-export([reconnect/0]).
 -export([init/1]).
 -export([callback_mode/0]).
 -export([terminate/3]).
@@ -15,12 +15,13 @@
 -export([wait_hello/3]).
 -export([identify/3]).
 -export([ready/3]).
+-export([resuming/3]).
 
 start_link() ->
   gen_statem:start_link({local, ?MODULE}, ?MODULE, [], []).
 
-connect() ->
-  ok.
+reconnect() ->
+  gen_statem:cast(?MODULE, reconnect).
 
 callback_mode() ->
   [state_functions, state_enter].
@@ -65,6 +66,31 @@ get_ws_url(info, {gun_data, Pid, _Ref, fin, HttpData}, Data) ->
   gun:close(Pid),
   {next_state, connecting_ws, Data2}.
 
+resuming(enter,
+         _OldStateName,
+         #{resume_gateway_url := Url,
+           conn := Conn,
+           port := Port,
+           ws_tls := TLSOpts,
+           ws_protocols := Protocols,
+           ws_path := Path} =
+           Data) ->
+  io:format(user, "******* resuming ********", []),
+  gun:close(Conn),
+  {ok, NewConn} = gun:open(Url, Port, #{tls_opts => TLSOpts, protocols => Protocols}),
+  {ok, _Protocol} = gun:await_up(NewConn),
+  gun:ws_upgrade(NewConn, Path),
+  {keep_state, Data};
+resuming(info,
+         {gun_upgrade, Pid, Ref, [<<"websocket">>], _Headers},
+         #{session_id := SessionId, seq := Seq} = Data) ->
+  send_resume(Pid, Ref, SessionId, Seq),
+  {next_state, ready, Data#{conn => Pid, ref => Ref}};
+resuming(info, {gun_ws, _Pid, _Ref, {text, _Content}}, Data) ->
+  {keep_state, Data};
+resuming(info, {gun_response, _Pid, _, _, _Status, _Headers}, Data) ->
+  {keep_state, Data}.
+
 connecting_ws(enter,
               _OldStateName,
               #{ws_url := Url,
@@ -85,11 +111,11 @@ connecting_ws(info, {gun_response, _Pid, _, _, _Status, _Headers}, Data) ->
 wait_hello(enter, _OldStateName, Data) ->
   {keep_state, Data};
 wait_hello(info, {gun_ws, Pid, Ref, {text, Content}}, Data) ->
-  #{<<"op">> := OpCode, <<"d">> := DiscordData} = json:decode(Content),
+  #{?OPCODE := OpCode, ?DATA := DiscordData} = json:decode(Content),
 
   case OpCode of
     ?OP_HELLO ->
-      #{<<"heartbeat_interval">> := HeartbeatInterval} = DiscordData,
+      #{?HEARTBEAT_INTERVAL := HeartbeatInterval} = DiscordData,
       erdi_heartbeat:start_beating(#{heartbeat_interval => HeartbeatInterval,
                                      conn => Pid,
                                      ref => Ref,
@@ -102,17 +128,18 @@ wait_hello(info, {gun_ws, Pid, Ref, {text, Content}}, Data) ->
 
 identify(enter,
          _OldStateName,
-         #{} =
-           #{conn := Pid,
-             ref := Ref,
-             intents := Intents} =
-             Data) ->
+         #{conn := Pid,
+           ref := Ref,
+           intents := Intents} =
+           Data) ->
   % send identify events, but no more than 1000 in a 24 hour period
   send_identify(Pid, Ref, Intents),
   {keep_state, Data};
-identify(info, {gun_ws, _, _, {_, Response}}, Data) ->
+identify(cast, reconnect, Data) ->
+  {next_state, resuming, Data};
+identify(info, {gun_ws, _, _, {text, Response}}, Data) ->
   ResponseTerm = json:decode(Response),
-  OpCode = maps:get(<<"op">>, ResponseTerm),
+  OpCode = maps:get(?OPCODE, ResponseTerm),
   Return =
     case OpCode of
       ?OP_HEARTBEAT_ACK ->
@@ -120,6 +147,12 @@ identify(info, {gun_ws, _, _, {_, Response}}, Data) ->
         {keep_state, Data};
       ?OP_DISPATCH ->
         {next_state, ready, Data, [postpone]};
+      ?OP_RECONNECT ->
+        io:format(user, "need to resume ~p~n", [ResponseTerm]),
+        {keep_state, Data};
+      ?OP_INVALID_SESSION ->
+        io:format(user, "maybe resume ~p~n", [ResponseTerm]),
+        {keep_state, Data};
       _ ->
         io:format(user, "No idea ~p~n", [ResponseTerm]),
         {keep_state, Data}
@@ -129,9 +162,14 @@ identify(info, {gun_ws, _, _, {_, Response}}, Data) ->
 ready(enter, _OldStateName, Data) ->
   io:format(user, "entered ready~n", []),
   {keep_state, Data};
+ready(cast, reconnect, Data) ->
+  {next_state, resuming, Data};
+ready(info, {gun_down, Pid, _, _, _, _}, Data) ->
+  gun:close(Pid),
+  {next_state, resuming, Data};
 ready(info, {gun_ws, _, _, {_, Response}}, Data) ->
   ResponseTerm = json:decode(Response),
-  OpCode = maps:get(<<"op">>, ResponseTerm),
+  OpCode = maps:get(?OPCODE, ResponseTerm),
   Return =
     case OpCode of
       ?OP_HEARTBEAT_ACK ->
@@ -139,11 +177,18 @@ ready(info, {gun_ws, _, _, {_, Response}}, Data) ->
         erdi_heartbeat:receive_ack(),
         {keep_state, Data};
       ?OP_DISPATCH ->
-        Seq = maps:get(<<"s">>, ResponseTerm),
+        Seq = maps:get(?SEQ, ResponseTerm),
         erdi_heartbeat:set_sequence(Seq),
         io:format(user, "Message Sequence ~p: ~p~n", [Seq, ResponseTerm]),
         Data2 = handle_message(ResponseTerm, Data),
         {keep_state, Data2#{seq => Seq}};
+      ?OP_INVALID_SESSION ->
+        %%% may need to reconnect
+        io:format(user, "maybe resume ~p~n", [ResponseTerm]),
+        {next_state, resuming, Data};
+      ?OP_RECONNECT ->
+        io:format(user, "need to resume ~p~n", [ResponseTerm]),
+        {next_state, resuming, Data};
       _ ->
         io:format(user, "No idea ~p~n", [ResponseTerm]),
         {keep_state, Data}
@@ -159,16 +204,16 @@ terminate(_, _, _) ->
 secret_token() ->
   list_to_binary(os:getenv("DISCORD_SECRET_TOKEN")).
 
-handle_message(#{<<"t">> := <<"READY">>, <<"d">> := DiscordData} = _Message, Data) ->
+handle_message(#{?TYPE := <<"READY">>, ?DATA := DiscordData} = _Message, Data) ->
   #{<<"resume_gateway_url">> := ResumeUrl,
     <<"session_id">> := SessionId,
     <<"guilds">> := Guilds} =
     DiscordData,
   io:format(user, " ready message: ~p, ~p, ~p~n", [ResumeUrl, SessionId, Guilds]),
-  Data#{resume_url => ResumeUrl,
+  Data#{resume_gateway_url => ResumeUrl,
         session_id => SessionId,
         guilds => Guilds};
-handle_message(#{<<"t">> := Type} = _Message, Data) ->
+handle_message(#{?TYPE := Type} = _Message, Data) ->
   io:format(user, " message type: ~p~n", [Type]),
   Data.
 
@@ -209,3 +254,13 @@ send_identify(Pid, Ref, Intents) ->
               <<"device">> => <<"erdi_library">>}}},
   IdentifyJson = iolist_to_binary(json:encode(IdentifyMsg)),
   gun:ws_send(Pid, Ref, {text, IdentifyJson}).
+
+send_resume(Pid, Ref, SessionId, Sequence) ->
+  ResumeMsg =
+    #{op => ?OP_RESUME,
+      d =>
+        #{<<"token">> => secret_token(),
+          <<"session_id">> => SessionId,
+          <<"seq">> => Sequence}},
+  ResumeJson = iolist_to_binary(json:encode(ResumeMsg)),
+  gun:ws_send(Pid, Ref, {text, ResumeJson}).

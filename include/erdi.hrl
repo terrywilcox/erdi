@@ -1,3 +1,4 @@
+%% Discord Op Codes
 -define(OP_DISPATCH, 0).
 -define(OP_HEARTBEAT, 1).
 -define(OP_IDENTIFY, 2).
@@ -9,3 +10,9 @@
 -define(OP_INVALID_SESSION, 9).
 -define(OP_HELLO, 10).
 -define(OP_HEARTBEAT_ACK, 11).
+%% Discord keys
+-define(OPCODE, <<"op">>).
+-define(DATA, <<"d">>).
+-define(SEQ, <<"s">>).
+-define(TYPE, <<"t">>).
+-define(HEARTBEAT_INTERVAL, <<"heartbeat_interval">>).

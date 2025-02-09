@@ -37,13 +37,22 @@ handle_cast({start, #{heartbeat_interval := HeartbeatInterval} = NewState}, OldS
   erlang:send_after(Wait, self(), beat_heart),
   State = maps:merge(NewState, OldState),
   {noreply, State};
-handle_cast({message_seq, Seq}, State) ->
+handle_cast({message_seq, Seq}, #{seq := <<"null">>} = State) ->
   {noreply, State#{seq => Seq}};
+handle_cast({message_seq, Seq}, #{seq := OldSeq} = State) when Seq > OldSeq ->
+  {noreply, State#{seq => Seq}};
+handle_cast({message_seq, _Seq}, State) ->
+  {noreply, State};
 handle_cast(receive_ack, State) ->
   {noreply, State#{unacked_beats => 0}};
 handle_cast(_Any, State) ->
   {noreply, State}.
 
+handle_info(beat_heart, #{seq := Sequence, unacked_beats := Unacked} = State)
+  when Unacked > 2 ->
+  erdi_websocket:reconnect(Sequence),
+  io:format(user, "reconnecting", []),
+  {noreply, State#{unacked_beats => 0}};
 handle_info(beat_heart,
             #{heartbeat_interval := HeartbeatInterval,
               seq := Sequence,
@@ -51,7 +60,7 @@ handle_info(beat_heart,
               ref := Ref,
               unacked_beats := Unacked} =
               State) ->
-  Heartbeat = #{<<"op">> => ?OP_HEARTBEAT, <<"d">> => Sequence},
+  Heartbeat = #{?OPCODE => ?OP_HEARTBEAT, ?DATA => Sequence},
   io:format(user, "sending heartbeat: ~p, unacked: ~p~n", [Heartbeat, Unacked]),
   Message = iolist_to_binary(json:encode(Heartbeat)),
   gun:ws_send(Conn, Ref, {text, Message}),
