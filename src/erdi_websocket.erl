@@ -171,6 +171,9 @@ ready(cast, reconnect, Data) ->
 ready(cast, {send, Message}, #{conn := Conn, ref := Ref} = Data) ->
   send_message(Conn, Ref, Message),
   {keep_state, Data};
+ready(info, {gun_ws, Pid, _, {close, _, _}}, Data) ->
+  gun:close(Pid),
+  {next_state, resuming, Data};
 ready(info, {gun_down, Pid, _, _, _, _}, Data) ->
   gun:close(Pid),
   {next_state, resuming, Data};
@@ -220,8 +223,8 @@ handle_message(#{?TYPE := <<"READY">>, ?DATA := DiscordData} = _Message, Data) -
   Data#{resume_gateway_url => ResumeUrl,
         session_id => SessionId,
         guilds => Guilds};
-handle_message(#{?TYPE := Type} = _Message, Data) ->
-  io:format(user, " message type: ~p~n", [Type]),
+handle_message(Message, Data) ->
+  erdi_dispatcher:handle_message(Message),
   Data.
 
 open_http(Domain, 443 = Port, Path, TLSOpts) ->
