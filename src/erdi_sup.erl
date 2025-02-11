@@ -13,7 +13,7 @@
 -define(SERVER, ?MODULE).
 
 start_link() ->
-  supervisor:start_link({local, ?SERVER}, ?MODULE, []).
+    supervisor:start_link({local, ?SERVER}, ?MODULE, []).
 
 %% sup_flags() = #{strategy => strategy(),         % optional
 %%                 intensity => non_neg_integer(), % optional
@@ -25,23 +25,35 @@ start_link() ->
 %%                  type => worker(),       % optional
 %%                  modules => modules()}   % optional
 init([]) ->
-  SupFlags =
-    #{strategy => one_for_all,
-      intensity => 0,
-      period => 1},
-  ChildSpecs =
-    [#{id => erdi_http,
-       start => {erdi_http, start_link, []},
-       type => worker},
-     #{id => erdi_websocket,
-       start => {erdi_websocket, start_link, []},
-       type => worker},
-     #{id => erdi_dispatcher,
-       start => {erdi_dispatcher, start_link, []},
-       type => worker},
-     #{id => erdi_heartbeat,
-       start => {erdi_heartbeat, start_link, []},
-       type => worker}],
-  {ok, {SupFlags, ChildSpecs}}.
+    SupFlags =
+        #{
+            strategy => one_for_all,
+            intensity => 0,
+            period => 1
+        },
+    ChildSpecs =
+        [
+            #{
+                id => erdi_http,
+                start => {erdi_http, start_link, []},
+                type => worker
+            },
+            #{
+                id => erdi_websocket,
+                start => {erdi_websocket, start_link, []},
+                type => worker
+            },
+            #{
+                id => erdi_dispatcher,
+                start => {erdi_dispatcher, start_link, []},
+                type => worker
+            },
+            #{
+                id => erdi_heartbeat,
+                start => {erdi_heartbeat, start_link, []},
+                type => worker
+            }
+        ],
+    {ok, {SupFlags, ChildSpecs}}.
 
 %% internal functions
