@@ -35,9 +35,9 @@ init([]) ->
     maps:from_list(
       application:get_all_env(erdi)),
   Data1 =
-    Data#{gateway_tls => [{verify, verify_peer}, {cacerts, public_key:cacerts_get()}]},
-  Data2 = Data1#{ws_tls => [{verify, verify_none}, {cacerts, public_key:cacerts_get()}]},
-  {ok, get_ws_url, Data2}.
+    Data#{gateway_tls => [{verify, verify_peer}, {cacerts, public_key:cacerts_get()}],
+          ws_tls => [{verify, verify_none}, {cacerts, public_key:cacerts_get()}]},
+  {ok, get_ws_url, Data1}.
 
 get_ws_url(enter,
            _OldStateName,
@@ -79,7 +79,6 @@ resuming(enter,
            ws_protocols := Protocols,
            ws_path := Path} =
            Data) ->
-  io:format(user, "******* resuming ********", []),
   gun:close(Conn),
   {ok, NewConn} = gun:open(Url, Port, #{tls_opts => TLSOpts, protocols => Protocols}),
   {ok, _Protocol} = gun:await_up(NewConn),
@@ -122,8 +121,7 @@ wait_hello(info, {gun_ws, Pid, Ref, {text, Content}}, Data) ->
       #{?HEARTBEAT_INTERVAL := HeartbeatInterval} = DiscordData,
       erdi_heartbeat:start_beating(#{heartbeat_interval => HeartbeatInterval,
                                      conn => Pid,
-                                     ref => Ref,
-                                     seq => <<"null">>}),
+                                     ref => Ref}),
       {next_state, identify, Data#{heartbeat_interval => HeartbeatInterval}};
     _ ->
       io:format(user, "what is this? ~p~n", [OpCode]),
@@ -164,7 +162,6 @@ identify(info, {gun_ws, _, _, {text, Response}}, Data) ->
   Return.
 
 ready(enter, _OldStateName, Data) ->
-  io:format(user, "entered ready~n", []),
   {keep_state, Data};
 ready(cast, reconnect, Data) ->
   {next_state, resuming, Data};
@@ -187,13 +184,9 @@ ready(info, {gun_ws, _, _, {_, Response}}, Data) ->
         erdi_heartbeat:receive_ack(),
         {keep_state, Data};
       ?OP_DISPATCH ->
-        Seq = maps:get(?SEQ, ResponseTerm),
-        erdi_heartbeat:set_sequence(Seq),
-        io:format(user, "Message Sequence ~p: ~p~n", [Seq, ResponseTerm]),
         Data2 = handle_message(ResponseTerm, Data),
-        {keep_state, Data2#{seq => Seq}};
+        {keep_state, Data2};
       ?OP_INVALID_SESSION ->
-        %%% may need to reconnect
         io:format(user, "maybe resume ~p~n", [ResponseTerm]),
         {next_state, resuming, Data};
       ?OP_RECONNECT ->
@@ -214,21 +207,23 @@ terminate(_, _, _) ->
 secret_token() ->
   list_to_binary(os:getenv("DISCORD_SECRET_TOKEN")).
 
-handle_message(#{?TYPE := <<"READY">>, ?DATA := DiscordData} = _Message, Data) ->
-  #{<<"resume_gateway_url">> := ResumeUrl,
-    <<"session_id">> := SessionId,
-    <<"guilds">> := Guilds} =
-    DiscordData,
-  User = maps:get(?USER, DiscordData),
-  UserId = maps:get(?ID, User),
-  io:format(user, " ready message: ~p, ~p, ~p~n", [ResumeUrl, SessionId, UserId]),
-  Data#{resume_gateway_url => ResumeUrl,
-        session_id => SessionId,
-        guilds => Guilds,
-        user_id => UserId};
-handle_message(Message, #{user_id := UserId} = Data) ->
-  erdi_dispatcher:handle_message(Message, UserId),
-  Data.
+handle_message(#{?TYPE := <<"READY">>, ?SEQ := NewSeq} = Message, Data) ->
+  DiscordData = erdi_discord_utils:message_info(Message),
+  NewData = maps:merge(Data, DiscordData),
+  erdi_dispatcher:update_state(NewData),
+  increment_seq(NewSeq, NewData);
+handle_message(#{?SEQ := NewSeq} = Message, Data) ->
+  erdi_dispatcher:handle_message(Message, Data),
+  increment_seq(NewSeq, Data).
+
+increment_seq(NewSeq, #{seq := Seq} = Data) when is_integer(Seq), NewSeq > Seq ->
+  erdi_heartbeat:set_sequence(NewSeq),
+  Data#{seq => NewSeq};
+increment_seq(_NewSeq, #{seq := Seq} = Data) when is_integer(Seq) ->
+  Data;
+increment_seq(NewSeq, Data) ->
+  erdi_heartbeat:set_sequence(NewSeq),
+  Data#{seq => NewSeq}.
 
 open_http(Domain, 443 = Port, Path, TLSOpts) ->
   {ok, Conn} = gun:open(Domain, Port, #{tls_opts => TLSOpts}),

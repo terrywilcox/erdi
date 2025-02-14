@@ -7,11 +7,13 @@
 -export([init/1, handle_event/2, handle_call/2, handle_info/2, terminate/2,
          code_change/3]).
 
-init(Args) ->
-  {ok, Args}.
+init(_Args) ->
+  {ok, #{}}.
 
-handle_event({?TYPE_MESSAGE_CREATE, Message, UserId}, State) ->
-  io:format(user, "************ trying to react ~n", []),
+handle_event({update, Options}, State) ->
+  NewState = maps:merge(State, Options),
+  {ok, NewState};
+handle_event({?TYPE_MESSAGE_CREATE, Message, #{user_id := UserId} = _Options}, State) ->
   Data = maps:get(?DATA, Message, #{}),
   Author = maps:get(?AUTHOR, Data),
   AuthorId = maps:get(?ID, Author),
@@ -42,4 +44,4 @@ code_change(_OldVsn, State, _Extra) ->
 
 react(ChannelId, MessageId, Emoji) ->
   {Method, Message} = erdi_rest:react_add(ChannelId, MessageId, Emoji),
-  erdi_http:send(Method, Message).
+  erdi_http:send({Method, Message}).

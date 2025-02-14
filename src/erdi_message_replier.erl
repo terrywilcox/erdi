@@ -10,8 +10,10 @@
 init(Args) ->
   {ok, Args}.
 
-handle_event({?TYPE_MESSAGE_CREATE, Message, UserId}, State) ->
-  io:format(user, "************ trying to react ~n", []),
+handle_event({update, Options}, State) ->
+  NewState = maps:merge(State, Options),
+  {ok, NewState};
+handle_event({?TYPE_MESSAGE_CREATE, Message, #{user_id := UserId} = _Options}, State) ->
   Data = maps:get(?DATA, Message, #{}),
   Author = maps:get(?AUTHOR, Data),
   AuthorId = maps:get(?ID, Author),
@@ -19,13 +21,17 @@ handle_event({?TYPE_MESSAGE_CREATE, Message, UserId}, State) ->
     X when X == AuthorId ->
       ok;
     _ ->
-      ChannelId = maps:get(?CHANNEL_ID, Data),
-      MessageId = maps:get(?MESSAGE_ID, Data),
-      reply(ChannelId, MessageId, <<"Wrong!">>)
+      ChannelId1 = maps:get(?CHANNEL_ID, Data),
+      Bob = create_message(ChannelId1, <<"Bob!">>),
+      #{?CHANNEL_ID := ChannelId, <<"id">> := MessageId} = Bob,
+      timer:sleep(3000),
+      edit_message(ChannelId, MessageId, <<"Ted!">>)
   end,
   {ok, State};
 handle_event(_, State) ->
   {ok, State}.
+
+      %      MessageId = maps:get(?MESSAGE_ID, Data),
 
 handle_call(_Request, State) ->
   {ok, {reply, ok}, State}.
@@ -39,6 +45,10 @@ terminate(_Reason, _State) ->
 code_change(_OldVsn, State, _Extra) ->
   {ok, State}.
 
-reply(ChannelId, MessageId, Content) ->
-  {Method, Path, Message} = erdi_rest:reply(ChannelId, MessageId, Content),
-  erdi_http:send(Method, Path, Message).
+create_message(ChannelId, Content) ->
+  {Method, Path, Message} = erdi_rest:create_message(ChannelId, Content),
+  erdi_http:send_await({Method, Path, Message}).
+
+edit_message(ChannelId, MessageId, Content) ->
+  {Method, Path, Message} = erdi_rest:edit_message(ChannelId, MessageId, Content),
+  erdi_http:send({Method, Path, Message}).
