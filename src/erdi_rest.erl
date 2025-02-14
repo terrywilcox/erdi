@@ -20,9 +20,12 @@ reply(ChannelId, MessageId, Message) ->
       <<"message_reference">> => #{<<"message_id">> => iolist_to_binary(MessageId)}},
   {post, Path, Body}.
 
-create_message(ChannelId, Message) ->
+create_message(ChannelId, Message) when is_binary(Message) ->
   Path = ["channels/", ChannelId, "/messages"],
   Body = #{<<"content">> => iolist_to_binary(Message)},
+  {post, Path, Body};
+create_message(ChannelId, #{} = Body) ->
+  Path = ["channels/", ChannelId, "/messages"],
   {post, Path, Body}.
 
 edit_message(ChannelId, MessageId, NewMessage) ->

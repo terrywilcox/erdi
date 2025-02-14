@@ -69,7 +69,8 @@ handle_call({send, Method, Path, Body},
                http_opts => #{keepalive => infinity}}),
   {ok, _Protocol} = gun:await_up(Conn),
   Ref = send(Method, Conn, BasePath, Path, Headers, Body),
-  {response, nofin, 200, _Headers} = gun:await(Conn, Ref),
+  {response, Fin, Code, _Headers} = gun:await(Conn, Ref),
+  io:format(user, "what is wrong? ~p, ~p~n", [Fin, Code]),
   {ok, ResponseBody} = gun:await_body(Conn, Ref),
   {reply, json:decode(ResponseBody), State};
 handle_call(stop, _From, State) ->
