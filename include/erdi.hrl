@@ -10,9 +10,17 @@
 -define(OP_INVALID_SESSION, 9).
 -define(OP_HELLO, 10).
 -define(OP_HEARTBEAT_ACK, 11).
+%% Message types
+-define(TYPE_MESSAGE_CREATE, <<"MESSAGE_CREATE">>).
 %% Discord keys
 -define(OPCODE, <<"op">>).
 -define(DATA, <<"d">>).
 -define(SEQ, <<"s">>).
 -define(TYPE, <<"t">>).
+-define(USER, <<"user">>).
+-define(ID, <<"id">>).
 -define(HEARTBEAT_INTERVAL, <<"heartbeat_interval">>).
+-define(AUTHOR, <<"author">>).
+-define(USERNAME, <<"username">>).
+-define(CHANNEL_ID, <<"channel_id">>).
+-define(MESSAGE_ID, <<"id">>).
