@@ -14,14 +14,12 @@ handle_event({update, Options}, State) ->
   NewState = maps:merge(State, Options),
   {ok, NewState};
 handle_event({?TYPE_MESSAGE_CREATE, Message, #{user_id := UserId} = _Options}, State) ->
-  Data = maps:get(?DATA, Message, #{}),
-  Author = maps:get(?AUTHOR, Data),
-  AuthorId = maps:get(?ID, Author),
+  AuthorId = erdi_maps:get([?DATA, ?AUTHOR, ?ID], Message),
   case UserId of
     X when X == AuthorId ->
       ok;
     _ ->
-      ChannelId1 = maps:get(?CHANNEL_ID, Data),
+      ChannelId = erdi_maps:get([?DATA, ?CHANNEL_ID], Message),
       Content =
         #{<<"content">> => <<"this is the message text!">>,
           <<"components">> =>
@@ -40,7 +38,7 @@ handle_event({?TYPE_MESSAGE_CREATE, Message, #{user_id := UserId} = _Options}, S
                        #{<<"label">> => <<"Dog">>, <<"value">> => <<"dog">>}]}]}]},
 
       _Phil = json:encode(Content),
-      _Bob = create_message(ChannelId1, Content)
+      _Bob = create_message(ChannelId, Content)
   end,
   %#{?CHANNEL_ID := ChannelId, <<"id">> := MessageId} = Bob,
   %      timer:sleep(3000),
