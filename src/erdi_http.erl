@@ -37,21 +37,6 @@ init(_) ->
      path => "/api/v10/",
      headers => headers()}}.
 
-handle_call({get, Path},
-            _From,
-            #{domain := Domain,
-              port := Port,
-              protocols := Protocols,
-              tls_opts := TLSOpts,
-              path := BasePath,
-              headers := Headers} =
-              State) ->
-  {ok, Conn} = gun:open(Domain, Port, #{protocols => Protocols, tls_opts => TLSOpts}),
-  {ok, _Protocol} = gun:await_up(Conn),
-  Ref = gun:get(Conn, BasePath ++ Path, Headers),
-  {response, nofin, 200, _Headers} = gun:await(Conn, Ref),
-  {ok, Body} = gun:await_body(Conn, Ref),
-  {reply, json:decode(Body), State};
 handle_call({send, Method, Path, Body},
             _From,
             #{domain := Domain,
@@ -69,10 +54,18 @@ handle_call({send, Method, Path, Body},
                http_opts => #{keepalive => infinity}}),
   {ok, _Protocol} = gun:await_up(Conn),
   Ref = send(Method, Conn, BasePath, Path, Headers, Body),
-  {response, Fin, Code, _Headers} = gun:await(Conn, Ref),
-  io:format(user, "what is wrong? ~p, ~p~n", [Fin, Code]),
+  {response, _Fin, Code, _Headers} = gun:await(Conn, Ref),
   {ok, ResponseBody} = gun:await_body(Conn, Ref),
-  {reply, json:decode(ResponseBody), State};
+  ResponseTerm = json:decode(ResponseBody),
+  Response =
+    case Code >= 400 of
+      true ->
+        {error, Code, ResponseTerm};
+      _ ->
+        {ok, Code, ResponseTerm}
+    end,
+  io:format(user, "what is wrong? ~p, ~p~n", [Code, ResponseBody]),
+  {reply, Response, State};
 handle_call(stop, _From, State) ->
   {stop, normal, ok, State};
 handle_call(_Any, _From, State) ->
@@ -107,9 +100,13 @@ terminate(_Reason, _State) ->
 code_change(_OldVsn, State, _Extra) ->
   {ok, State}.
 
-send(Method, Conn, BasePath, Path, Headers, Body) ->
+send(Method, Conn, BasePath, Path, Headers, Body) when is_binary(Body) ->
   FullPath = full_path(BasePath, Path),
-  send(Method, Conn, FullPath, Headers, iolist_to_binary(json:encode(Body))).
+  send(Method, Conn, FullPath, Headers, Body);
+send(Method, Conn, BasePath, Path, Headers, Body) when is_list(Body) ->
+  send(Method, Conn, BasePath, Path, Headers, iolist_to_binary(Body));
+send(Method, Conn, BasePath, Path, Headers, Body) when is_map(Body) ->
+  send(Method, Conn, BasePath, Path, Headers, iolist_to_binary(json:encode(Body))).
 
 send(get, Conn, Path, Headers, _Body) ->
   gun:get(Conn, Path, Headers);
@@ -125,7 +122,7 @@ send(patch, Conn, Path, Headers, Body) ->
 full_path(BasePath, Path) when is_binary(BasePath), is_binary(Path) ->
   iolist_to_binary([BasePath, Path]);
 full_path(BasePath, Path) ->
-  iolist_to_binary([iolist_to_binary(BasePath), iolist_to_binary(Path)]).
+  full_path(iolist_to_binary(BasePath), iolist_to_binary(Path)).
 
 headers() ->
   Token = secret_token(),
